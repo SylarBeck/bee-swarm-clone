@@ -97,6 +97,93 @@ Config.Upgrades = {
 	{ Id = "Slots", Name = "Creature Slots", Desc = "Hold more creatures", Base = 4, Step = 1, Max = 8, CostBase = 1000, CostGrowth = 2.6, Unit = "" },
 }
 
+-- Prestige ("Ascend"): reset progress for a permanent coin bonus.
+Config.Prestige = { BaseCost = 250000, CostGrowth = 2, BonusPerPearl = 0.25 }
+
+function Config.PrestigeCost(pearls)
+	return math.floor(Config.Prestige.BaseCost * Config.Prestige.CostGrowth ^ pearls)
+end
+
+function Config.CoinMultiplier(pearls)
+	return 1 + Config.Prestige.BonusPerPearl * pearls
+end
+
+-- Buff bubbles that float around the zones.
+Config.Tokens = { MaxActive = 12, SpawnInterval = 8, Lifetime = 90, PickupRange = 8 }
+Config.Buffs = {
+	Haste = { Name = "Swift Current", Label = "SPEED", Desc = "+50% swim speed", Duration = 60, Color = Color3.fromRGB(80, 230, 255) },
+	Frenzy = { Name = "Shell Frenzy", Label = "x2", Desc = "Double shell collection", Duration = 45, Color = Color3.fromRGB(255, 120, 200) },
+	Burst = { Name = "Pearl Burst", Label = "COINS", Desc = "Instant coins", Duration = 0, Color = Color3.fromRGB(255, 220, 70) },
+}
+Config.BuffOrder = { "Haste", "Frenzy", "Burst" }
+
+-- Quests: Captain Finn hands these out in order; they never run out.
+Config.Quests = {
+	{ Type = "Collect", Goal = 100, Reward = 100 },
+	{ Type = "CashIn", Goal = 100, Reward = 150 },
+	{ Type = "Hatch", Goal = 1, Reward = 200 },
+	{ Type = "Upgrade", Goal = 2, Reward = 300 },
+	{ Type = "Collect", Goal = 1000, Reward = 600 },
+	{ Type = "Hatch", Goal = 3, Reward = 800 },
+	{ Type = "CashIn", Goal = 5000, Reward = 1500 },
+	{ Type = "HaveZone", Zone = "Kelp", Goal = 1, Reward = 3000 },
+	{ Type = "Bubble", Goal = 5, Reward = 2500 },
+	{ Type = "Hatch", Goal = 10, Reward = 6000 },
+	{ Type = "Collect", Goal = 20000, Reward = 10000 },
+	{ Type = "HaveZone", Zone = "Trench", Goal = 1, Reward = 25000 },
+	{ Type = "CashIn", Goal = 250000, Reward = 50000 },
+	{ Type = "Prestige", Goal = 1, Reward = 25000 },
+}
+
+local endlessCycle = {
+	{ Type = "Collect", Base = 60000, Factor = 0.3 },
+	{ Type = "CashIn", Base = 60000, Factor = 0.3 },
+	{ Type = "Hatch", Base = 8, Factor = 6000 },
+	{ Type = "Bubble", Base = 8, Factor = 5000 },
+}
+
+function Config.GetQuest(index)
+	local quest = Config.Quests[index]
+	if quest then
+		return quest
+	end
+	local n = index - #Config.Quests
+	local entry = endlessCycle[(n - 1) % #endlessCycle + 1]
+	local scale = 1.25 ^ n
+	local goal = math.floor(entry.Base * scale)
+	if goal > 100 then
+		goal = math.floor(goal / 100) * 100
+	end
+	local reward = (entry.Type == "Collect" or entry.Type == "CashIn") and goal * entry.Factor or entry.Factor * scale
+	return { Type = entry.Type, Goal = goal, Reward = math.floor(reward) }
+end
+
+local function commas(n)
+	local grouped = tostring(math.floor(n)):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+	return grouped
+end
+Config.Commas = commas
+
+function Config.QuestText(quest)
+	local t = quest.Type
+	if t == "Collect" then
+		return ("Collect %s shells"):format(commas(quest.Goal))
+	elseif t == "CashIn" then
+		return ("Earn %s coins at the Dive Station"):format(commas(quest.Goal))
+	elseif t == "Hatch" then
+		return ("Hatch %s egg%s"):format(commas(quest.Goal), quest.Goal == 1 and "" or "s")
+	elseif t == "Upgrade" then
+		return ("Buy %s upgrades"):format(commas(quest.Goal))
+	elseif t == "Bubble" then
+		return ("Pop %s buff bubbles"):format(commas(quest.Goal))
+	elseif t == "HaveZone" then
+		return "Unlock the " .. Config.ZoneById[quest.Zone].Name
+	elseif t == "Prestige" then
+		return "Ascend once to earn a Pearl"
+	end
+	return "???"
+end
+
 Config.ZoneById = {}
 for _, zone in Config.Zones do
 	Config.ZoneById[zone.Id] = zone

@@ -18,6 +18,9 @@ local function defaultData()
 		Levels = { Capacity = 0, Power = 0, Speed = 0, Slots = 0 },
 		Zones = { Shallows = true },
 		Creatures = {},
+		Pearls = 0,
+		QuestIndex = 1,
+		QuestProgress = 0,
 	}
 end
 
@@ -29,6 +32,9 @@ local function reconcile(saved)
 
 	data.Coins = math.max(0, tonumber(saved.Coins) or 0)
 	data.Shells = math.max(0, tonumber(saved.Shells) or 0)
+	data.Pearls = math.max(0, math.floor(tonumber(saved.Pearls) or 0))
+	data.QuestIndex = math.max(1, math.floor(tonumber(saved.QuestIndex) or 1))
+	data.QuestProgress = math.max(0, tonumber(saved.QuestProgress) or 0)
 
 	if type(saved.Levels) == "table" then
 		for _, upgrade in Config.Upgrades do
@@ -93,6 +99,26 @@ function Data.Sync(player)
 	for id, level in data.Levels do
 		player:SetAttribute("Lv_" .. id, level)
 	end
+	player:SetAttribute("Pearls", data.Pearls)
+	player:SetAttribute("CoinMult", Config.CoinMultiplier(data.Pearls))
+	player:SetAttribute("PrestigeCost", Config.PrestigeCost(data.Pearls))
+	player:SetAttribute("QuestIndex", data.QuestIndex)
+	player:SetAttribute("QuestProgress", data.QuestProgress)
+
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then
+		leaderstats = Instance.new("Folder")
+		leaderstats.Name = "leaderstats"
+		for _, name in { "Coins", "Pearls" } do
+			local value = Instance.new("IntValue")
+			value.Name = name
+			value.Parent = leaderstats
+		end
+		leaderstats.Parent = player
+	end
+	leaderstats.Coins.Value = math.floor(data.Coins)
+	leaderstats.Pearls.Value = data.Pearls
+
 	player:SetAttribute("Zones", table.concat(zones, ","))
 	player:SetAttribute("Creatures", table.concat(data.Creatures, ","))
 	player:SetAttribute("DataLoaded", true)

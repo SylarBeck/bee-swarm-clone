@@ -1,4 +1,4 @@
--- Reef Rush client: HUD, shop/creature/zone menu, creature visuals and floating pickups.
+-- Reef Rush client: HUD, quest tracker, buffs, menu, hatch reveal, creature visuals and pickups.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -11,11 +11,15 @@ local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Co
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
 local PANEL = Color3.fromRGB(14, 52, 82)
+local PANEL_DARK = Color3.fromRGB(8, 30, 50)
 local PANEL_LIGHT = Color3.fromRGB(26, 84, 120)
-local ACCENT = Color3.fromRGB(0, 190, 210)
+local ACCENT = Color3.fromRGB(0, 200, 220)
+local GOLD = Color3.fromRGB(255, 215, 80)
 local GOOD = Color3.fromRGB(60, 190, 110)
 local BAD = Color3.fromRGB(220, 80, 80)
+local DISABLED = Color3.fromRGB(100, 110, 120)
 local WHITE = Color3.fromRGB(255, 255, 255)
+local MUTED = Color3.fromRGB(180, 215, 235)
 
 local function new(class, props, parent)
 	local inst = Instance.new(class)
@@ -27,7 +31,30 @@ local function new(class, props, parent)
 end
 
 local function corner(inst, radius)
-	new("UICorner", { CornerRadius = UDim.new(0, radius or 8) }, inst)
+	new("UICorner", { CornerRadius = UDim.new(0, radius or 10) }, inst)
+end
+
+local function stroke(inst, color, thickness)
+	new("UIStroke", {
+		Color = color or Color3.fromRGB(0, 140, 170),
+		Thickness = thickness or 2,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, inst)
+end
+
+local function gradient(inst, top, bottom)
+	new("UIGradient", {
+		Color = ColorSequence.new(top, bottom),
+		Rotation = 90,
+	}, inst)
+end
+
+local function panel(props, parent)
+	props.BackgroundColor3 = props.BackgroundColor3 or PANEL
+	local frame = new("Frame", props, parent)
+	corner(frame)
+	stroke(frame)
+	return frame
 end
 
 local function fmt(n)
@@ -39,47 +66,46 @@ local function fmt(n)
 	elseif n >= 1e4 then
 		return ("%.1fK"):format(n / 1e3)
 	end
-	local s = tostring(n)
-	local grouped = s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-	return grouped
+	return Config.Commas(n)
 end
 
-local gui = new("ScreenGui", { Name = "ReefUI", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
+local gui = new("ScreenGui", { Name = "ReefUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }, player:WaitForChild("PlayerGui"))
 
 ----------------------------------------------------------------------------
--- HUD
+-- HUD (coins, shell bar)
 ----------------------------------------------------------------------------
-local stats = new("Frame", {
-	Size = UDim2.fromOffset(260, 92),
+local stats = panel({
+	Size = UDim2.fromOffset(270, 98),
 	Position = UDim2.fromOffset(12, 12),
-	BackgroundColor3 = PANEL,
-	BackgroundTransparency = 0.1,
+	BackgroundTransparency = 0.05,
 }, gui)
-corner(stats)
+gradient(stats, Color3.fromRGB(24, 80, 116), Color3.fromRGB(10, 40, 66))
 
 local coinsLabel = new("TextLabel", {
 	Size = UDim2.new(1, -16, 0, 30),
-	Position = UDim2.fromOffset(8, 6),
+	Position = UDim2.fromOffset(10, 6),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.FredokaOne,
-	TextSize = 24,
-	TextColor3 = Color3.fromRGB(255, 215, 80),
+	TextSize = 26,
+	TextColor3 = GOLD,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	Text = "Coins: 0",
 }, stats)
 
 local barBack = new("Frame", {
-	Size = UDim2.new(1, -16, 0, 22),
-	Position = UDim2.fromOffset(8, 42),
-	BackgroundColor3 = Color3.fromRGB(8, 28, 46),
+	Size = UDim2.new(1, -20, 0, 24),
+	Position = UDim2.fromOffset(10, 42),
+	BackgroundColor3 = PANEL_DARK,
 }, stats)
-corner(barBack, 6)
+corner(barBack, 8)
+stroke(barBack, Color3.fromRGB(0, 100, 130), 1)
 
 local barFill = new("Frame", {
 	Size = UDim2.fromScale(0, 1),
 	BackgroundColor3 = ACCENT,
 }, barBack)
-corner(barFill, 6)
+corner(barFill, 8)
+gradient(barFill, Color3.fromRGB(120, 255, 255), Color3.fromRGB(0, 150, 190))
 
 local shellsLabel = new("TextLabel", {
 	Size = UDim2.fromScale(1, 1),
@@ -87,34 +113,42 @@ local shellsLabel = new("TextLabel", {
 	Font = Enum.Font.GothamBold,
 	TextSize = 14,
 	TextColor3 = WHITE,
+	TextStrokeTransparency = 0.5,
 	Text = "Shells 0 / 100",
+	ZIndex = 2,
 }, barBack)
 
-new("TextLabel", {
-	Size = UDim2.new(1, -16, 0, 18),
-	Position = UDim2.fromOffset(8, 68),
+local infoLabel = new("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 20),
+	Position = UDim2.fromOffset(10, 72),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.Gotham,
 	TextSize = 12,
-	TextColor3 = Color3.fromRGB(180, 220, 240),
+	TextColor3 = MUTED,
 	TextXAlignment = Enum.TextXAlignment.Left,
-	Text = "Swim near coral to collect. Cash in at the Dive Station!",
+	Text = "",
 }, stats)
 
 local function updateHud()
 	local shells = player:GetAttribute("Shells") or 0
 	local maxShells = player:GetAttribute("MaxShells") or 100
+	local pearls = player:GetAttribute("Pearls") or 0
 	coinsLabel.Text = "Coins: " .. fmt(player:GetAttribute("Coins") or 0)
 	shellsLabel.Text = ("Shells %s / %s"):format(fmt(shells), fmt(maxShells))
 	barFill.Size = UDim2.fromScale(math.clamp(shells / maxShells, 0, 1), 1)
-	barFill.BackgroundColor3 = shells >= maxShells and BAD or ACCENT
+	barFill.BackgroundColor3 = shells >= maxShells and BAD or WHITE
+	if pearls > 0 then
+		infoLabel.Text = ("Pearls: %d   Coin bonus: x%.2f"):format(pearls, player:GetAttribute("CoinMult") or 1)
+	else
+		infoLabel.Text = "Swim near coral. Cash in at the Dive Station!"
+	end
 end
 
 ----------------------------------------------------------------------------
 -- Toasts
 ----------------------------------------------------------------------------
 local toast = new("TextLabel", {
-	Size = UDim2.fromOffset(460, 40),
+	Size = UDim2.fromOffset(480, 42),
 	AnchorPoint = Vector2.new(0.5, 0),
 	Position = UDim2.new(0.5, 0, 0, 14),
 	BackgroundColor3 = PANEL,
@@ -124,6 +158,7 @@ local toast = new("TextLabel", {
 	TextSize = 16,
 	TextColor3 = WHITE,
 	Text = "",
+	ZIndex = 20,
 }, gui)
 corner(toast)
 
@@ -133,7 +168,7 @@ local function showToast(text, kind)
 	local token = toastToken
 	toast.Text = text
 	toast.BackgroundColor3 = (kind == "error" and BAD) or (kind == "success" and GOOD) or PANEL
-	toast.BackgroundTransparency = 0.1
+	toast.BackgroundTransparency = 0.05
 	toast.TextTransparency = 0
 	task.delay(3, function()
 		if token == toastToken then
@@ -145,23 +180,146 @@ end
 Remotes:WaitForChild("Notify").OnClientEvent:Connect(showToast)
 
 ----------------------------------------------------------------------------
--- Menu (Shop / Creatures / Zones)
+-- Quest tracker (bottom-left)
 ----------------------------------------------------------------------------
-local menu = new("Frame", {
-	Size = UDim2.fromOffset(580, 440),
+local tracker = panel({
+	Size = UDim2.fromOffset(300, 84),
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 12, 1, -12),
+	BackgroundTransparency = 0.05,
+}, gui)
+gradient(tracker, Color3.fromRGB(24, 80, 116), Color3.fromRGB(10, 40, 66))
+
+local questTitle = new("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 20),
+	Position = UDim2.fromOffset(10, 6),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.FredokaOne,
+	TextSize = 16,
+	TextColor3 = ACCENT,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "QUEST",
+}, tracker)
+
+local questText = new("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 20),
+	Position = UDim2.fromOffset(10, 26),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextColor3 = WHITE,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	Text = "",
+}, tracker)
+
+local questBarBack = new("Frame", {
+	Size = UDim2.new(1, -20, 0, 18),
+	Position = UDim2.fromOffset(10, 54),
+	BackgroundColor3 = PANEL_DARK,
+}, tracker)
+corner(questBarBack, 6)
+
+local questBarFill = new("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = GOLD }, questBarBack)
+corner(questBarFill, 6)
+gradient(questBarFill, Color3.fromRGB(255, 240, 150), Color3.fromRGB(230, 170, 30))
+
+local questBarLabel = new("TextLabel", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 12,
+	TextColor3 = WHITE,
+	TextStrokeTransparency = 0.5,
+	Text = "",
+	ZIndex = 2,
+}, questBarBack)
+
+local function updateQuest()
+	local index = player:GetAttribute("QuestIndex") or 1
+	local progress = player:GetAttribute("QuestProgress") or 0
+	local quest = Config.GetQuest(index)
+	questTitle.Text = ("QUEST #%d   Reward: %s coins"):format(index, fmt(quest.Reward))
+	questText.Text = Config.QuestText(quest)
+	questBarFill.Size = UDim2.fromScale(math.clamp(progress / quest.Goal, 0, 1), 1)
+	questBarLabel.Text = ("%s / %s"):format(fmt(progress), fmt(quest.Goal))
+end
+
+----------------------------------------------------------------------------
+-- Buff chips (top-right)
+----------------------------------------------------------------------------
+local buffList = new("Frame", {
+	Size = UDim2.fromOffset(190, 140),
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -12, 0, 12),
+	BackgroundTransparency = 1,
+}, gui)
+new("UIListLayout", { Padding = UDim.new(0, 6), HorizontalAlignment = Enum.HorizontalAlignment.Right }, buffList)
+
+local buffChips = {}
+for _, id in Config.BuffOrder do
+	local def = Config.Buffs[id]
+	if def.Duration > 0 then
+		local chip = panel({
+			Size = UDim2.fromOffset(190, 36),
+			BackgroundColor3 = PANEL,
+			Visible = false,
+		}, buffList)
+		stroke(chip, def.Color, 2)
+		new("TextLabel", {
+			Size = UDim2.new(1, -60, 1, 0),
+			Position = UDim2.fromOffset(10, 0),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			TextSize = 13,
+			TextColor3 = def.Color,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = def.Name,
+		}, chip)
+		local timer = new("TextLabel", {
+			Size = UDim2.fromOffset(50, 36),
+			Position = UDim2.new(1, -54, 0, 0),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.FredokaOne,
+			TextSize = 16,
+			TextColor3 = WHITE,
+			Text = "",
+		}, chip)
+		buffChips[id] = { Chip = chip, Timer = timer }
+	end
+end
+
+RunService.Heartbeat:Connect(function()
+	local now = Workspace:GetServerTimeNow()
+	for id, ui in buffChips do
+		local expiry = player:GetAttribute("Buff_" .. id) or 0
+		local remaining = expiry - now
+		ui.Chip.Visible = remaining > 0
+		if remaining > 0 then
+			ui.Timer.Text = ("%ds"):format(math.ceil(remaining))
+		end
+	end
+end)
+
+----------------------------------------------------------------------------
+-- Menu (Shop / Creatures / Zones / Quest / Ascend)
+----------------------------------------------------------------------------
+local menu = panel({
+	Size = UDim2.fromOffset(600, 460),
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5),
-	BackgroundColor3 = PANEL,
 	Visible = false,
+	ZIndex = 5,
 }, gui)
-corner(menu, 12)
+gradient(menu, Color3.fromRGB(20, 70, 104), Color3.fromRGB(10, 40, 66))
+new("UISizeConstraint", { MaxSize = Vector2.new(600, 460) }, menu)
 
 new("TextLabel", {
 	Size = UDim2.new(1, -60, 0, 40),
-	Position = UDim2.fromOffset(16, 6),
+	Position = UDim2.fromOffset(18, 6),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.FredokaOne,
-	TextSize = 28,
+	TextSize = 30,
 	TextColor3 = WHITE,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	Text = "Reef Rush",
@@ -169,7 +327,7 @@ new("TextLabel", {
 
 local closeButton = new("TextButton", {
 	Size = UDim2.fromOffset(34, 34),
-	Position = UDim2.new(1, -44, 0, 8),
+	Position = UDim2.new(1, -46, 0, 10),
 	BackgroundColor3 = BAD,
 	Font = Enum.Font.GothamBold,
 	TextSize = 18,
@@ -179,19 +337,16 @@ local closeButton = new("TextButton", {
 corner(closeButton)
 
 local tabBar = new("Frame", {
-	Size = UDim2.new(1, -32, 0, 34),
-	Position = UDim2.fromOffset(16, 50),
+	Size = UDim2.new(1, -36, 0, 34),
+	Position = UDim2.fromOffset(18, 52),
 	BackgroundTransparency = 1,
 }, menu)
-new("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal,
-	Padding = UDim.new(0, 8),
-}, tabBar)
+new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6) }, tabBar)
 
 local content = new("ScrollingFrame", {
-	Size = UDim2.new(1, -32, 1, -104),
-	Position = UDim2.fromOffset(16, 92),
-	BackgroundColor3 = Color3.fromRGB(8, 32, 52),
+	Size = UDim2.new(1, -36, 1, -108),
+	Position = UDim2.fromOffset(18, 94),
+	BackgroundColor3 = PANEL_DARK,
 	BorderSizePixel = 0,
 	ScrollBarThickness = 6,
 	CanvasSize = UDim2.new(),
@@ -221,7 +376,7 @@ end
 local function addHeader(text)
 	order += 1
 	new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 26),
+		Size = UDim2.new(1, 0, 0, 28),
 		BackgroundTransparency = 1,
 		Font = Enum.Font.FredokaOne,
 		TextSize = 20,
@@ -235,36 +390,41 @@ end
 local function addRow(title, subtitle, buttonText, buttonColor, onClick, titleColor)
 	order += 1
 	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 54),
+		Size = UDim2.new(1, 0, 0, 56),
 		BackgroundColor3 = PANEL_LIGHT,
 		LayoutOrder = order,
 	}, content)
 	corner(row)
+	if titleColor then
+		stroke(row, titleColor, 1)
+	end
 
 	new("TextLabel", {
-		Size = UDim2.new(1, -150, 0, 26),
-		Position = UDim2.fromOffset(10, 4),
+		Size = UDim2.new(1, -160, 0, 26),
+		Position = UDim2.fromOffset(12, 5),
 		BackgroundTransparency = 1,
 		Font = Enum.Font.GothamBold,
 		TextSize = 16,
 		TextColor3 = titleColor or WHITE,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Text = title,
 	}, row)
 	new("TextLabel", {
-		Size = UDim2.new(1, -150, 0, 20),
-		Position = UDim2.fromOffset(10, 29),
+		Size = UDim2.new(1, -160, 0, 20),
+		Position = UDim2.fromOffset(12, 31),
 		BackgroundTransparency = 1,
 		Font = Enum.Font.Gotham,
 		TextSize = 13,
-		TextColor3 = Color3.fromRGB(190, 220, 240),
+		TextColor3 = MUTED,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Text = subtitle,
 	}, row)
 
 	if buttonText then
 		local button = new("TextButton", {
-			Size = UDim2.fromOffset(130, 36),
+			Size = UDim2.fromOffset(140, 38),
 			AnchorPoint = Vector2.new(1, 0.5),
 			Position = UDim2.new(1, -8, 0.5, 0),
 			BackgroundColor3 = buttonColor,
@@ -281,6 +441,7 @@ end
 local function buy(kind, id, extra)
 	local ok, message = Remotes.Buy:InvokeServer(kind, id, extra)
 	showToast(message or "...", ok and "success" or "error")
+	return ok
 end
 
 local function ownedCreatures()
@@ -319,7 +480,7 @@ local function buildShop()
 			egg.Name,
 			"Likely: " .. table.concat(text, ", ") .. "...",
 			"Buy - " .. fmt(egg.Cost),
-			coins >= egg.Cost and GOOD or Color3.fromRGB(110, 110, 110),
+			coins >= egg.Cost and GOOD or DISABLED,
 			function()
 				buy("Egg", egg.Id)
 			end
@@ -343,7 +504,7 @@ local function buildShop()
 					upgrade.Unit
 				),
 				"Upgrade - " .. fmt(cost),
-				coins >= cost and GOOD or Color3.fromRGB(110, 110, 110),
+				coins >= cost and GOOD or DISABLED,
 				function()
 					buy("Upgrade", upgrade.Id)
 				end
@@ -393,7 +554,7 @@ local function buildZones()
 		end
 	end
 
-	addRow("Dive Hub", "Cash in shells and shop here", "Teleport", ACCENT, function()
+	addRow("Dive Hub", "Cash in shells, shop and talk to Captain Finn", "Teleport", ACCENT, function()
 		teleport("Hub")
 	end)
 
@@ -402,13 +563,13 @@ local function buildZones()
 		if zoneUnlocked(zone.Id) then
 			addRow(zone.Name, info, "Teleport", ACCENT, function()
 				teleport(zone.Id)
-			end)
+			end, zone.CoralColors[1])
 		else
 			addRow(
 				zone.Name .. " (Locked)",
 				info,
 				"Unlock - " .. fmt(zone.Cost),
-				coins >= zone.Cost and GOOD or Color3.fromRGB(110, 110, 110),
+				coins >= zone.Cost and GOOD or DISABLED,
 				function()
 					buy("Zone", zone.Id)
 				end
@@ -417,10 +578,76 @@ local function buildZones()
 	end
 end
 
+local function buildQuest()
+	local index = player:GetAttribute("QuestIndex") or 1
+	local progress = player:GetAttribute("QuestProgress") or 0
+	local quest = Config.GetQuest(index)
+
+	addHeader("Captain Finn's Quest #" .. index)
+	addRow(
+		Config.QuestText(quest),
+		("Progress: %s / %s   |   Reward: %s coins"):format(fmt(progress), fmt(quest.Goal), fmt(quest.Reward)),
+		nil,
+		nil,
+		nil,
+		GOLD
+	)
+
+	addHeader("Coming up")
+	for i = 1, 3 do
+		local upcoming = Config.GetQuest(index + i)
+		addRow(Config.QuestText(upcoming), ("Reward: %s coins"):format(fmt(upcoming.Reward)), nil)
+	end
+
+	addHeader("Buff bubbles")
+	for _, id in Config.BuffOrder do
+		local def = Config.Buffs[id]
+		addRow(def.Name, def.Desc .. " - pop the glowing bubbles floating around the zones", nil, nil, nil, def.Color)
+	end
+end
+
+local ascendConfirmAt = 0
+local function buildAscend()
+	local coins = player:GetAttribute("Coins") or 0
+	local pearls = player:GetAttribute("Pearls") or 0
+	local cost = player:GetAttribute("PrestigeCost") or Config.PrestigeCost(0)
+
+	addHeader("Ascend")
+	addRow(
+		("Pearls: %d"):format(pearls),
+		("Each Pearl gives +%d%% coins when you cash in. Current: x%.2f"):format(Config.Prestige.BonusPerPearl * 100, Config.CoinMultiplier(pearls)),
+		nil,
+		nil,
+		nil,
+		Color3.fromRGB(255, 240, 200)
+	)
+	addRow("Resets", "Coins, shells, upgrades, creatures and zones. Pearls and quests stay.", nil)
+	addRow(
+		"Ascend to the next Pearl",
+		("Next bonus: x%.2f"):format(Config.CoinMultiplier(pearls + 1)),
+		"Ascend - " .. fmt(cost),
+		coins >= cost and GOOD or DISABLED,
+		function()
+			if os.clock() - ascendConfirmAt < 4 then
+				ascendConfirmAt = 0
+				if buy("Prestige", "Prestige") then
+					menu.Visible = false
+				end
+			else
+				ascendConfirmAt = os.clock()
+				showToast("Ascending resets your progress. Click again to confirm.", "error")
+			end
+		end
+	)
+end
+
+local tabOrder = { "Shop", "Creatures", "Zones", "Quest", "Ascend" }
 local tabs = {
 	Shop = buildShop,
 	Creatures = buildCreatures,
 	Zones = buildZones,
+	Quest = buildQuest,
+	Ascend = buildAscend,
 }
 
 local tabButtons = {}
@@ -437,12 +664,12 @@ local function refreshMenu()
 	end
 end
 
-for _, name in { "Shop", "Creatures", "Zones" } do
+for _, name in tabOrder do
 	local button = new("TextButton", {
-		Size = UDim2.fromOffset(110, 34),
+		Size = UDim2.fromOffset(100, 34),
 		BackgroundColor3 = PANEL_LIGHT,
 		Font = Enum.Font.GothamBold,
-		TextSize = 15,
+		TextSize = 14,
 		TextColor3 = WHITE,
 		Text = name,
 	}, tabBar)
@@ -456,7 +683,9 @@ for _, name in { "Shop", "Creatures", "Zones" } do
 end
 
 local function openMenu(tab)
-	currentTab = tab or currentTab
+	if tabs[tab] then
+		currentTab = tab
+	end
 	menu.Visible = true
 	content.CanvasPosition = Vector2.zero
 	refreshMenu()
@@ -466,21 +695,19 @@ closeButton.Activated:Connect(function()
 	menu.Visible = false
 end)
 
-Remotes:WaitForChild("OpenShop").OnClientEvent:Connect(function()
-	openMenu("Shop")
-end)
+Remotes:WaitForChild("OpenTab").OnClientEvent:Connect(openMenu)
 
 -- Side buttons
 local sideButtons = new("Frame", {
-	Size = UDim2.fromOffset(120, 150),
-	Position = UDim2.fromOffset(12, 116),
+	Size = UDim2.fromOffset(130, 250),
+	Position = UDim2.fromOffset(12, 122),
 	BackgroundTransparency = 1,
 }, gui)
-new("UIListLayout", { Padding = UDim.new(0, 8) }, sideButtons)
+new("UIListLayout", { Padding = UDim.new(0, 6) }, sideButtons)
 
-for _, name in { "Shop", "Creatures", "Zones" } do
+for _, name in tabOrder do
 	local button = new("TextButton", {
-		Size = UDim2.fromOffset(120, 42),
+		Size = UDim2.fromOffset(130, 42),
 		BackgroundColor3 = PANEL,
 		Font = Enum.Font.FredokaOne,
 		TextSize = 20,
@@ -488,6 +715,7 @@ for _, name in { "Shop", "Creatures", "Zones" } do
 		Text = name,
 	}, sideButtons)
 	corner(button)
+	stroke(button)
 	button.Activated:Connect(function()
 		if menu.Visible and currentTab == name then
 			menu.Visible = false
@@ -497,9 +725,21 @@ for _, name in { "Shop", "Creatures", "Zones" } do
 	end)
 end
 
+tracker.Active = true
+local trackerButton = new("TextButton", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Text = "",
+	ZIndex = 3,
+}, tracker)
+trackerButton.Activated:Connect(function()
+	openMenu("Quest")
+end)
+
 local refreshQueued = false
 player.AttributeChanged:Connect(function()
 	updateHud()
+	updateQuest()
 	if menu.Visible and not refreshQueued then
 		refreshQueued = true
 		task.delay(0.15, function()
@@ -509,6 +749,75 @@ player.AttributeChanged:Connect(function()
 	end
 end)
 updateHud()
+updateQuest()
+
+----------------------------------------------------------------------------
+-- Egg hatch reveal
+----------------------------------------------------------------------------
+local hatchFrame = panel({
+	Size = UDim2.fromOffset(340, 200),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.4),
+	Visible = false,
+	ZIndex = 10,
+}, gui)
+gradient(hatchFrame, Color3.fromRGB(30, 100, 140), Color3.fromRGB(10, 40, 66))
+local hatchScale = new("UIScale", { Scale = 1 }, hatchFrame)
+
+local hatchTitle = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 36),
+	Position = UDim2.fromOffset(0, 12),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.FredokaOne,
+	TextSize = 24,
+	TextColor3 = WHITE,
+	Text = "You hatched...",
+	ZIndex = 11,
+}, hatchFrame)
+local hatchName = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 60),
+	Position = UDim2.fromOffset(0, 56),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.FredokaOne,
+	TextSize = 46,
+	TextColor3 = WHITE,
+	TextStrokeTransparency = 0.3,
+	Text = "",
+	ZIndex = 11,
+}, hatchFrame)
+local hatchInfo = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 40),
+	Position = UDim2.fromOffset(0, 124),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 16,
+	TextColor3 = MUTED,
+	Text = "",
+	ZIndex = 11,
+}, hatchFrame)
+
+local hatchToken = 0
+Remotes:WaitForChild("Hatch").OnClientEvent:Connect(function(name)
+	local def = Config.CreatureByName[name]
+	if not def then
+		return
+	end
+	hatchToken += 1
+	local token = hatchToken
+	local color = Config.RarityColors[def.Rarity]
+	hatchName.Text = name
+	hatchName.TextColor3 = color
+	hatchInfo.Text = ("%s  -  %d shells/sec"):format(def.Rarity, def.Power)
+	hatchFrame.UIStroke.Color = color
+	hatchScale.Scale = 0.4
+	hatchFrame.Visible = true
+	TweenService:Create(hatchScale, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	task.delay(2.6, function()
+		if token == hatchToken then
+			hatchFrame.Visible = false
+		end
+	end)
+end)
 
 ----------------------------------------------------------------------------
 -- Floating "+N" pickups
@@ -548,7 +857,7 @@ end)
 -- Creature visuals (client-side, for every player)
 ----------------------------------------------------------------------------
 local creatureFolder = new("Folder", { Name = "ReefCreatures" }, Workspace)
-local followers = {} -- [Player] = { Raw = string, Models = { Model } }
+local followers = {} -- [Player] = { Raw = string, Models = { { Model, Tail } }, JustBuilt = boolean }
 
 local function buildCreatureModel(name)
 	local def = Config.CreatureByName[name]
@@ -570,9 +879,15 @@ local function buildCreatureModel(name)
 	for _, side in { -1, 1 } do
 		part({
 			Name = "Eye",
-			Size = Vector3.new(0.3, 0.3, 0.3),
-			Color = Color3.fromRGB(20, 20, 20),
+			Size = Vector3.new(0.35, 0.35, 0.25),
+			Color = Color3.fromRGB(255, 255, 255),
 			CFrame = body.CFrame * CFrame.new(side * eyeOffsetX, def.Size.Y * 0.15, -def.Size.Z / 2),
+		})
+		part({
+			Name = "Pupil",
+			Size = Vector3.new(0.18, 0.18, 0.2),
+			Color = Color3.fromRGB(10, 10, 10),
+			CFrame = body.CFrame * CFrame.new(side * eyeOffsetX, def.Size.Y * 0.15, -def.Size.Z / 2 - 0.1),
 		})
 	end
 	part({
@@ -581,12 +896,18 @@ local function buildCreatureModel(name)
 		Color = def.Accent,
 		CFrame = body.CFrame * CFrame.new(0, def.Size.Y / 2 + def.Size.Y * 0.2, 0),
 	})
+	part({
+		Name = "Tail",
+		Size = Vector3.new(0.3, def.Size.Y * 0.8, def.Size.Z * 0.45),
+		Color = def.Accent,
+		CFrame = body.CFrame * CFrame.new(0, 0, def.Size.Z / 2 + def.Size.Z * 0.2),
+	})
 
-	if def.Rarity == "Legendary" then
+	if def.Rarity == "Legendary" or def.Rarity == "Epic" then
 		part({
 			Name = "Glow",
 			Size = def.Size * 1.15,
-			Color = Config.RarityColors.Legendary,
+			Color = Config.RarityColors[def.Rarity],
 			Material = Enum.Material.ForceField,
 			CFrame = body.CFrame,
 		})
@@ -657,13 +978,13 @@ RunService.RenderStepped:Connect(function(dt)
 				local radius = 5 + math.min(count, 12) * 0.2
 				local bob = math.sin(t * 2 + i) * 0.6
 				local offset = Vector3.new(math.cos(angle) * radius, -0.5 + bob, math.sin(angle) * radius)
-				local target = CFrame.new(root.Position + offset) * root.CFrame.Rotation
+				local wiggle = CFrame.Angles(0, math.sin(t * 3 + i) * 0.25, math.sin(t * 2 + i) * 0.1)
+				local target = CFrame.new(root.Position + offset) * root.CFrame.Rotation * wiggle
 
-				local current = model:GetPivot()
 				if state.JustBuilt then
 					model:PivotTo(target)
 				else
-					model:PivotTo(current:Lerp(target, alpha))
+					model:PivotTo(model:GetPivot():Lerp(target, alpha))
 				end
 			end
 			state.JustBuilt = false

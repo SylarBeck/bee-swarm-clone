@@ -1,51 +1,26 @@
--- Reef Rush server entry point: collection loops, cash-in, shop and teleports.
+-- Reef Rush server entry point: collection loops, cash-in, shop, quests, buffs, prestige and teleports.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Remotes = require(script.Parent.Remotes)
 local Data = require(script.Parent.Data)
 local World = require(script.Parent.World)
+local Quests = require(script.Parent.Quests)
+local Buffs = require(script.Parent.Buffs)
 
 local COLLECT_TICK = 0.25
-local PLAYER_REACH = 9 -- studs (flat distance) a player can collect from
+local PLAYER_REACH = 10 -- studs (flat distance) a player can collect from
 local CREATURE_RANGE = 40 -- studs around the player creatures will work in
+local BASE_JUMP = 60
 
 Workspace.Gravity = Config.Gravity
 
--- Remotes
-local remotes = Instance.new("Folder")
-remotes.Name = "Remotes"
-remotes.Parent = ReplicatedStorage
-
-local function remote(class, name)
-	local r = Instance.new(class)
-	r.Name = name
-	r.Parent = remotes
-	return r
-end
-
-local BuyFunction = remote("RemoteFunction", "Buy")
-local TeleportFunction = remote("RemoteFunction", "Teleport")
-local PopEvent = remote("RemoteEvent", "Pop")
-local NotifyEvent = remote("RemoteEvent", "Notify")
-local OpenShopEvent = remote("RemoteEvent", "OpenShop")
-
 World.Build()
+Buffs.Start()
 
-local noticeTimes = {} -- [player] = { [key] = os.clock() }
-
-local function notify(player, text, kind, throttleKey)
-	if throttleKey then
-		noticeTimes[player] = noticeTimes[player] or {}
-		local last = noticeTimes[player][throttleKey]
-		if last and os.clock() - last < 4 then
-			return
-		end
-		noticeTimes[player][throttleKey] = os.clock()
-	end
-	NotifyEvent:FireClient(player, text, kind or "info")
-end
+local notify = Remotes.Notify
 
 local function flatDistance(a, b)
 	local dx, dz = a.X - b.X, a.Z - b.Z
@@ -62,13 +37,25 @@ local function applyCharacterStats(player)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if data and humanoid then
-		humanoid.WalkSpeed = Config.UpgradeValue("Speed", data.Levels.Speed)
-		humanoid.JumpPower = 60
+		local speed = Config.UpgradeValue("Speed", data.Levels.Speed)
+		if Buffs.IsActive(player, "Haste") then
+			speed *= 1.5
+		end
+		humanoid.WalkSpeed = speed
+		humanoid.JumpPower = BASE_JUMP
 	end
+end
+Buffs.OnChanged = function(player)
+	applyCharacterStats(player)
+	Data.Sync(player)
 end
 
 local function zoneUnlocked(data, zoneId)
 	return data.Zones[zoneId] == true
+end
+
+local function collectMultiplier(player)
+	return Buffs.IsActive(player, "Frenzy") and 2 or 1
 end
 
 -- Player collection: take shells from the closest coral in reach.
@@ -79,7 +66,7 @@ local function collectForPlayer(player, data, root)
 	local nearest, nearestDistance
 	for _, node in World.Nodes do
 		if node.Shells > 0 then
-			local distance = flatDistance(node.Part.Position, root.Position)
+			local distance = flatDistance(node.Position, root.Position)
 			if distance <= PLAYER_REACH and (not nearestDistance or distance < nearestDistance) then
 				nearest, nearestDistance = node, distance
 			end
@@ -90,7 +77,7 @@ local function collectForPlayer(player, data, root)
 	end
 
 	if not zoneUnlocked(data, nearest.Zone) then
-		notify(player, "This zone is locked! Unlock it in the Shop > Zones tab.", "error", "locked")
+		notify(player, "This zone is locked! Unlock it in the Zones tab.", "error", "locked")
 		return
 	end
 	if space <= 0 then
@@ -98,11 +85,12 @@ local function collectForPlayer(player, data, root)
 		return
 	end
 
-	local power = Config.UpgradeValue("Power", data.Levels.Power) * COLLECT_TICK
+	local power = Config.UpgradeValue("Power", data.Levels.Power) * COLLECT_TICK * collectMultiplier(player)
 	local taken = World.Take(nearest, math.min(power, space))
 	if taken > 0 then
 		data.Shells += taken
-		PopEvent:FireClient(player, nearest.Part.Position + Vector3.new(0, 5, 0), "+" .. math.floor(taken + 0.5), nearest.Part.Color)
+		Quests.Report(player, "Collect", taken)
+		Remotes.Pop:FireClient(player, nearest.Position + Vector3.new(0, 5, 0), "+" .. math.floor(taken + 0.5), nearest.Color)
 	end
 end
 
@@ -115,7 +103,7 @@ local function creatureTick(player, data, root)
 	local maxShells = Config.UpgradeValue("Capacity", data.Levels.Capacity)
 	local candidates = {}
 	for _, node in World.Nodes do
-		if node.Shells > 0 and zoneUnlocked(data, node.Zone) and flatDistance(node.Part.Position, root.Position) <= CREATURE_RANGE then
+		if node.Shells > 0 and zoneUnlocked(data, node.Zone) and flatDistance(node.Position, root.Position) <= CREATURE_RANGE then
 			table.insert(candidates, node)
 		end
 	end
@@ -123,6 +111,7 @@ local function creatureTick(player, data, root)
 		return
 	end
 
+	local multiplier = collectMultiplier(player)
 	for _, name in data.Creatures do
 		local space = maxShells - data.Shells
 		if space <= 0 then
@@ -131,10 +120,11 @@ local function creatureTick(player, data, root)
 		end
 		local def = Config.CreatureByName[name]
 		local node = candidates[math.random(1, #candidates)]
-		local taken = World.Take(node, math.min(def.Power, space))
+		local taken = World.Take(node, math.min(def.Power * multiplier, space))
 		if taken > 0 then
 			data.Shells += taken
-			PopEvent:FireClient(player, node.Part.Position + Vector3.new(0, 5, 0), "+" .. math.floor(taken + 0.5), Config.RarityColors[def.Rarity])
+			Quests.Report(player, "Collect", taken)
+			Remotes.Pop:FireClient(player, node.Position + Vector3.new(0, 5, 0), "+" .. math.floor(taken + 0.5), Config.RarityColors[def.Rarity])
 		end
 	end
 end
@@ -147,6 +137,7 @@ task.spawn(function()
 			local root = getRoot(player)
 			if data and root then
 				collectForPlayer(player, data, root)
+				Buffs.TryPickup(player, root.Position)
 				Data.Sync(player)
 			end
 		end
@@ -180,14 +171,20 @@ World.CashInPrompt.Triggered:Connect(function(player)
 		notify(player, "You have no shells to cash in.", "error")
 		return
 	end
+	local coins = math.floor(shells * Config.CoinMultiplier(data.Pearls))
 	data.Shells = 0
-	data.Coins += shells
+	data.Coins += coins
+	Quests.Report(player, "CashIn", coins)
 	Data.Sync(player)
-	notify(player, ("Cashed in %d shells for %d coins!"):format(shells, shells), "success")
+	notify(player, ("Cashed in %s shells for %s coins!"):format(Config.Commas(shells), Config.Commas(coins)), "success")
 end)
 
 World.ShopPrompt.Triggered:Connect(function(player)
-	OpenShopEvent:FireClient(player)
+	Remotes.OpenTab:FireClient(player, "Shop")
+end)
+
+World.QuestPrompt.Triggered:Connect(function(player)
+	Remotes.OpenTab:FireClient(player, "Quest")
 end)
 
 -- Shop
@@ -235,6 +232,7 @@ local function handleBuy(player, kind, id, extra)
 		if id == "Speed" then
 			applyCharacterStats(player)
 		end
+		Quests.Report(player, "Upgrade", 1)
 		Data.Sync(player)
 		return true, ("%s upgraded to level %d!"):format(upgrade.Name, level + 1)
 	elseif kind == "Egg" then
@@ -252,7 +250,9 @@ local function handleBuy(player, kind, id, extra)
 		data.Coins -= egg.Cost
 		local name = rollEgg(egg)
 		table.insert(data.Creatures, name)
+		Quests.Report(player, "Hatch", 1)
 		Data.Sync(player)
+		Remotes.Hatch:FireClient(player, name)
 		return true, ("You hatched a %s %s!"):format(Config.CreatureByName[name].Rarity, name)
 	elseif kind == "Zone" then
 		local zone = Config.ZoneById[id]
@@ -267,6 +267,7 @@ local function handleBuy(player, kind, id, extra)
 		end
 		data.Coins -= zone.Cost
 		data.Zones[id] = true
+		Quests.Check(player)
 		Data.Sync(player)
 		return true, zone.Name .. " unlocked!"
 	elseif kind == "Sell" then
@@ -278,13 +279,34 @@ local function handleBuy(player, kind, id, extra)
 		local value = Config.SellValue(name)
 		data.Coins += value
 		Data.Sync(player)
-		return true, ("Sold %s for %d coins."):format(name, value)
+		return true, ("Sold %s for %s coins."):format(name, Config.Commas(value))
+	elseif kind == "Prestige" then
+		local cost = Config.PrestigeCost(data.Pearls)
+		if data.Coins < cost then
+			return false, ("You need %s coins to Ascend."):format(Config.Commas(cost))
+		end
+		data.Pearls += 1
+		data.Coins = 0
+		data.Shells = 0
+		for upgradeId in data.Levels do
+			data.Levels[upgradeId] = 0
+		end
+		data.Zones = { Shallows = true }
+		data.Creatures = {}
+		Quests.Report(player, "Prestige", 1)
+		applyCharacterStats(player)
+		Data.Sync(player)
+		local root = getRoot(player)
+		if root then
+			root.CFrame = CFrame.new(Config.HubSpawn + Vector3.new(0, 5, 0))
+		end
+		return true, ("You Ascended! Pearls: %d (x%.2f coins)"):format(data.Pearls, Config.CoinMultiplier(data.Pearls))
 	end
 
 	return false, "Unknown request."
 end
 
-BuyFunction.OnServerInvoke = function(player, kind, id, extra)
+Remotes.Buy.OnServerInvoke = function(player, kind, id, extra)
 	if buying[player] then
 		return false, "Slow down!"
 	end
@@ -298,7 +320,7 @@ BuyFunction.OnServerInvoke = function(player, kind, id, extra)
 	return success, message
 end
 
-TeleportFunction.OnServerInvoke = function(player, zoneId)
+Remotes.Teleport.OnServerInvoke = function(player, zoneId)
 	local data = Data.Get(player)
 	local root = getRoot(player)
 	if not data or not root or typeof(zoneId) ~= "string" then
@@ -331,12 +353,15 @@ local function onPlayerAdded(player)
 	end)
 
 	Data.Load(player)
+	Quests.Check(player)
 	applyCharacterStats(player)
+	Data.Sync(player)
 end
 
 local function onPlayerRemoving(player)
 	Data.Release(player)
-	noticeTimes[player] = nil
+	Remotes.Forget(player)
+	Buffs.Forget(player)
 	buying[player] = nil
 end
 
